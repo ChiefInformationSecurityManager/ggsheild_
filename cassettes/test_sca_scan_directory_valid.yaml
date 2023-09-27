@@ -1,0 +1,97 @@
+interactions:
+  - request:
+      body: !!binary |
+        LS0yZWMxNTk5YzQ4ZmQ3N2FjZmNhM2ExM2FlNjhlOTdlMQ0KQ29udGVudC1EaXNwb3NpdGlvbjog
+        Zm9ybS1kYXRhOyBuYW1lPSJzY2FuX3BhcmFtZXRlcnMiDQoNCnsibWluaW11bV9zZXZlcml0eSI6
+        IG51bGwsICJpZ25vcmVkX3Z1bG5lcmFiaWxpdGllcyI6IFtdfQ0KLS0yZWMxNTk5YzQ4ZmQ3N2Fj
+        ZmNhM2ExM2FlNjhlOTdlMQ0KQ29udGVudC1EaXNwb3NpdGlvbjogZm9ybS1kYXRhOyBuYW1lPSJk
+        aXJlY3RvcnkiOyBmaWxlbmFtZT0iZGlyZWN0b3J5Ig0KDQofiwgARuj1ZAL/7ZXBbpwwEEA571cg
+        LrmkYBvbQKSteuwxl56qKDL2OFgLuxRDmqjKv9fsRsnSbKVekkrJPAkwM2N7Zuyx0yzNvlyqu6+g
+        DAzRq0AO/O1LSM6f27OcEkZZFN9Fb8DkRzWE6aOPCSvjbnQdrKmsqAyP4GlZ0YJxuYqQd883D4PP
+        lG5c20KnvHYqu7n5uRs2vlcaQts3DlqTjeBHn01bN2ZGjSq7dL11LaTtTm/+of4lP9R4IeWh1tlT
+        zdOCyohyLgUVlPE8IqwggkYxecv6X6TghF0ws/b9rf+vVRxIrjsYVXIRH373okb5ZiHZS32jmJBB
+        nhBSC1sUeaFEFd5GVMDBKF7URiqwdQ2lEMIIlhtKoDBgeJ2LUhvgpOaqTp4Gfjh/nrU/bKtPvgcd
+        ZpFHqgF+TG4APzt13MXvpkHvxd8Xvi4935tuVQez7/1975Lzl/ppaGd1M469v8iy2SzdDTeZd13f
+        wqketzA4e3/t/dxxHCZYmDw8/V2tjiJNDFg1teMy4RqG0Vn3MufzSpyI72g9LoglRkijhZIqNGzI
+        tcolL7mRWuecCwpUS8FLLalRypQ6ZyQc+baiYIwuToX2OLSWmkFVWqGLUlZgtaI23BDSgmGsNCZc
+        GXkYx9Kac65zyjWRAJawqiQ6lHayGPlqOVHSqWETTqDDoozNbnsdMurdbht/XsdneSrP/nAtedTP
+        PdZrRlieirQ4vZlu73sY/k8+XzNokrKUkqOQD3tr9YA3NoIgCIIgCIIgCIIgCIIgCIIgCIIgyIfl
+        N0CO4ZkAKAAADQotLTJlYzE1OTljNDhmZDc3YWNmY2EzYTEzYWU2OGU5N2UxLS0NCg==
+      headers:
+        Accept:
+          - '*/*'
+        Accept-Encoding:
+          - gzip, deflate
+        Connection:
+          - keep-alive
+        Content-Length:
+          - '904'
+        Content-Type:
+          - multipart/form-data; boundary=2ec1599c48fd77acfca3a13ae68e97e1
+        User-Agent:
+          - pygitguardian/1.9.0 (Darwin;py3.11.4)
+      method: POST
+      uri: https://api.gitguardian.com/v1/sca/sca_scan_all/
+    response:
+      body:
+        string:
+          '{"scanned_files":["Users/achillemascia/ggworkspace/ggshield/tests/unit/data/Pipfile.lock"],"found_package_vulns":[{"location":"Users/achillemascia/ggworkspace/ggshield/tests/unit/data/Pipfile.lock","package_vulns":[{"package_full_name":"certifi","version":"2023.5.7","ecosystem":"pypi","dependency_type":"transitive","vulns":[{"cve_ids":["CVE-2023-37920"],"identifier":"GHSA-xqr8-7jwr-rhp7","severity":"high","created_at":"2023-07-25T14:43:53Z","fixed_version":"2023.7.22","summary":"Removal
+          of e-Tugra root certificate"}]},{"package_full_name":"vyper","version":"0.2.10","ecosystem":"pypi","dependency_type":"transitive","vulns":[{"cve_ids":[],"identifier":"GHSA-22wc-c9wj-6q2v","severity":"medium","created_at":"2021-04-19T15:12:05Z","fixed_version":"0.2.12","summary":"VVE-2021-0001:
+          Memory corruption using function calls within arrays"},{"cve_ids":["CVE-2023-31146"],"identifier":"GHSA-3p37-3636-q8wv","severity":"high","created_at":"2023-05-12T20:21:54Z","fixed_version":"0.3.8","summary":"Vyper
+          vulnerable to OOB DynArray access when array is on both LHS and RHS of an
+          assignment"},{"cve_ids":["CVE-2021-41122"],"identifier":"GHSA-c7pr-343r-5c46","severity":"medium","created_at":"2021-10-06T17:48:46Z","fixed_version":"0.3.0","summary":"missing
+          clamps for decimal args in external functions"},{"cve_ids":["CVE-2022-24788"],"identifier":"GHSA-4mrx-6fxm-8jpg","severity":"high","created_at":"2022-04-20T20:31:44Z","fixed_version":"0.3.2","summary":"Buffer
+          Overflow in vyper"},{"cve_ids":["CVE-2023-32058"],"identifier":"GHSA-6r8q-pfpv-7cgj","severity":"high","created_at":"2023-05-12T20:21:35Z","fixed_version":"0.3.8","summary":"Vyper
+          vulnerable to integer overflow in loop"},{"cve_ids":["CVE-2023-32059"],"identifier":"GHSA-ph9x-4vc9-m39g","severity":"high","created_at":"2023-05-12T20:21:00Z","fixed_version":"0.3.8","summary":"Vyper
+          vulnerable to incorrect ordering of arguments for kwargs passed to internal
+          calls"},{"cve_ids":["CVE-2023-37902"],"identifier":"GHSA-f5x6-7qgp-jhf3","severity":"medium","created_at":"2023-07-25T17:46:19Z","fixed_version":"0.3.10","summary":"ecrecover
+          can return undefined data if signature does not verify"},{"cve_ids":["CVE-2022-24845"],"identifier":"GHSA-j2x6-9323-fp7h","severity":"high","created_at":"2022-04-22T20:24:13Z","fixed_version":"0.3.2","summary":"Integer
+          bounds error in Vyper"},{"cve_ids":["CVE-2023-30837"],"identifier":"GHSA-mgv8-gggw-mrg6","severity":"high","created_at":"2023-05-05T22:22:23Z","fixed_version":"0.3.8","summary":"vyper
+          vulnerable to storage allocator overflow"},{"cve_ids":[],"identifier":"GHSA-7vrm-3jc8-5wwm","severity":"high","created_at":"2022-04-04T21:40:45Z","fixed_version":"0.3.2","summary":"Incorrect
+          Comparison in Vyper"},{"cve_ids":["CVE-2022-29255"],"identifier":"GHSA-4v9q-cgpw-cf38","severity":"high","created_at":"2022-06-06T21:23:58Z","fixed_version":"0.3.4","summary":"Multiple
+          evaluation of contract address in call in vyper"},{"cve_ids":["CVE-2023-32675"],"identifier":"GHSA-vxmm-cwh2-q762","severity":"low","created_at":"2023-05-22T20:35:46Z","fixed_version":"0.3.8","summary":"Vyper''s
+          nonpayable default functions are sometimes payable"},{"cve_ids":["CVE-2021-41121"],"identifier":"GHSA-xv8x-pr4h-73jv","severity":"high","created_at":"2021-10-12T15:59:29Z","fixed_version":"0.3.0","summary":"Memory
+          corruption when returning a literal struct with a private call inside of it"}]}]}]}'
+      headers:
+        access-control-expose-headers:
+          - X-App-Version
+        allow:
+          - POST, OPTIONS
+        content-length:
+          - '3381'
+        content-type:
+          - application/json
+        cross-origin-opener-policy:
+          - same-origin
+        date:
+          - Mon, 04 Sep 2023 14:23:02 GMT
+        referrer-policy:
+          - strict-origin-when-cross-origin
+        server:
+          - istio-envoy
+        strict-transport-security:
+          - max-age=31536000; includeSubDomains
+        transfer-encoding:
+          - chunked
+        vary:
+          - Accept-Encoding,Cookie
+        x-app-version:
+          - v2.38.0
+        x-content-type-options:
+          - nosniff
+          - nosniff
+        x-envoy-upstream-service-time:
+          - '248'
+        x-frame-options:
+          - DENY
+          - SAMEORIGIN
+        x-sca-engine-version:
+          - 1.16.1
+        x-secrets-engine-version:
+          - 2.96.0
+        x-xss-protection:
+          - 1; mode=block
+      status:
+        code: 200
+        message: OK
+version: 1
