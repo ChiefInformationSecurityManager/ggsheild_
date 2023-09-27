@@ -1,264 +1,646 @@
-import io
 import os
 import platform
-import tarfile
-import tempfile
+import warnings
+from os.path import dirname, join, realpath
 from pathlib import Path
+from typing import Any, Union
 
 import pytest
+import vcr
+import yaml
+from click.testing import CliRunner, Result
+from pyfakefs.fake_filesystem import FakeFilesystem
+from pygitguardian import GGClient
+from pygitguardian.models import ScanResult
+from requests.utils import DEFAULT_CA_BUNDLE_PATH, extract_zipped_paths
 
-from tests.repository import Repository
+from ggshield.core.cache import Cache
+from tests.conftest import GG_VALID_TOKEN
 
 
-# The directory holding ggshield repository checkout
-ROOT_DIR = Path(__file__).parent.parent
+os.environ.setdefault("PYTHONBREAKPOINT", "ipdb.set_trace")
 
-# This is a test token, it is always reported as a valid secret
-GG_VALID_TOKEN = "ggtt-v-12345azert"  # ggignore
-GG_VALID_TOKEN_IGNORE_SHA = (
-    "56c126cef75e3d17c3de32dac60bab688ecc384a054c2c85b688c1dd7ac4eefd"
+
+def is_macos():
+    return platform.system() == "Darwin"
+
+
+DATA_PATH = Path(__file__).parent.absolute() / "data"
+
+
+_MULTIPLE_SECRETS_PATCH_CONTENT = """@@ -0,0 +1,2 @@
++FacebookAppKeys :
++String docker run --name geonetwork -d \
+            -p 8080:8080 -e MYSQL_HOST=google.com \
+            -e MYSQL_PORT=5434 -e MYSQL_USERNAME=root \
+            -e MYSQL_PASSWORD=m42ploz2wd geonetwork
+"""
+
+_MULTIPLE_SECRETS_PATCH = (
+    """commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 A\0test.txt\0\0diff --git a/test.txt b/test.txt
+new file mode 100644
+index 0000000..b80e3df
+--- /dev/null
++++ b/test.txt
+"""
+    + _MULTIPLE_SECRETS_PATCH_CONTENT
 )
 
-# This secret must be a secret known by the dashboard running functional tests
-KNOWN_SECRET = os.environ.get("TEST_KNOWN_SECRET", "")
+_MULTIPLE_SECRETS_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policy_break_count": 1,
+        "policies": ["Secrets detection", "File extensions", "Filenames"],
+        "policy_breaks": [
+            {
+                "type": "MySQL Assignment",
+                "policy": "Secrets detection",
+                "matches": [
+                    {
+                        "type": "host",
+                        "match": "google.com",
+                        "index_start": 114,
+                        "index_end": 123,
+                        "line_start": 3,
+                        "line_end": 3,
+                    },
+                    {
+                        "type": "port",
+                        "match": "5434",
+                        "index_start": 151,
+                        "index_end": 154,
+                        "line_start": 3,
+                        "line_end": 3,
+                    },
+                    {
+                        "type": "username",
+                        "match": "root",
+                        "index_start": 174,
+                        "index_end": 177,
+                        "line_start": 3,
+                        "line_end": 3,
+                    },
+                    {
+                        "type": "password",
+                        "match": "m42ploz2wd",
+                        "index_start": 209,
+                        "index_end": 218,
+                        "line_start": 3,
+                        "line_end": 3,
+                    },
+                ],
+            }
+        ],
+    }
+)
 
-# This secret must not be known by the dashboard running our tests
-UNKNOWN_SECRET = os.environ.get("TEST_UNKNOWN_SECRET", "ggtt-v-0frijog879")  # ggignore
+# This long token is a test token, always reported as an uncheckable secret
+GG_TEST_TOKEN = (
+    "8a784aab7090f6a4ba3b9f7a6594e2e727007a26590b58ed314e4b9ed4536479sRZlRup3xvtMVfiHWA"
+    "anbe712Jtc3nY8veZux5raL1bhpaxiv0rfyhFoAIMZUCh2Njyk7gRVsSQFPrEphSJnxa16SIdWKb03sRft"
+    "770LUTTYTAy3IM18A7Su4HjiHlGA9ihLj9ou3luadfRAATlKH6kAZwTw289Kq9uip67zxyWkUJdh6PTeFp"
+    "MgCh3AhHcZ21VeZHlu12345"
+)
 
+UNCHECKED_SECRET_PATCH = f"""commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
 
-def is_windows():
-    return platform.system() == "Windows"
+A message
 
+:000000 100644 0000000 e965047 A\0test\0\0diff --git a/test b/test
+new file mode 100644
+index 0000000..b80e3df
+--- /dev/null
++++ b/test
+@@ -0,0 +2 @@
++# gg token
++apikey = "{GG_TEST_TOKEN}";
+"""
 
-skipwindows = pytest.mark.skipif(
-    is_windows() and not os.environ.get("DISABLE_SKIPWINDOWS"),
-    reason="Skipped on Windows for now, define DISABLE_SKIPWINDOWS environment variable to unskip",
+VALID_SECRET_PATCH = f"""commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 A\0test\0\0diff --git a/test b/test
+new file mode 100644
+index 0000000..b80e3df
+--- /dev/null
++++ b/test
+@@ -0,0 +2 @@
++# gg token
++apikey = "{GG_VALID_TOKEN}";
+"""
+
+_SIMPLE_SECRET_TOKEN = "368ac3edf9e850d1c0ff9d6c526496f8237ddf91"  # ggignore
+_SIMPLE_SECRET_PATCH = f"""@@ -0,0 +1 @@
++github_token: {_SIMPLE_SECRET_TOKEN}
+"""
+_SIMPLE_SECRET_PATCH_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policies": ["File extensions", "Filenames", "Secrets detection"],
+        "policy_breaks": [
+            {
+                "type": "GitHub Token",
+                "policy": "Secrets Detection",
+                "matches": [
+                    {
+                        "match": _SIMPLE_SECRET_TOKEN,
+                        "type": "apikey",
+                        "index_start": 29,
+                        "index_end": 69,
+                    }
+                ],
+            }
+        ],
+        "policy_break_count": 1,
+    }
+)
+
+_SIMPLE_SECRET_WITH_FILENAME_PATCH_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policies": ["File extensions", "Filenames", "Secrets detection"],
+        "policy_breaks": [
+            {
+                "type": ".env",
+                "policy": "Filenames",
+                "matches": [{"type": "filename", "match": ".env"}],
+            },
+            {
+                "type": "GitHub Token",
+                "policy": "Secrets Detection",
+                "matches": [
+                    {
+                        "match": _SIMPLE_SECRET_TOKEN,  # noqa
+                        "type": "apikey",
+                        "index_start": 29,
+                        "index_end": 69,
+                    }
+                ],
+            },
+        ],
+        "policy_break_count": 2,
+    }
+)
+
+_MULTI_SECRET_ONE_LINE_PATCH = """@@ -0,0 +1 @@
++FacebookAppId = 294790898041575; FacebookAppSecret = ce3f9f0362bbe5ab01dfc8ee565e4372;
+
+"""
+
+_MULTI_SECRET_ONE_LINE_PATCH_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policies": ["File extensions", "Filenames", "Secrets detection"],
+        "policy_breaks": [
+            {
+                "type": "Facebook Access Tokens",
+                "policy": "Secrets Detection",
+                "matches": [
+                    {
+                        "match": "294790898041575",
+                        "index_start": 31,
+                        "index_end": 46,
+                        "type": "client_id",
+                    },
+                    {
+                        "match": "ce3f9f0362bbe5ab01dfc8ee565e4372",
+                        "index_start": 68,
+                        "index_end": 100,
+                        "type": "client_secret",
+                    },
+                ],
+            }
+        ],
+        "policy_break_count": 1,
+    }
 )
 
 
-_IAC_SINGLE_VULNERABILITY = """
-resource "aws_alb_listener" "bad_example" {
-  protocol = "HTTP"
-}
-"""
-
-
-_IAC_MULTIPLE_VULNERABILITIES = """
-resource "aws_security_group" "bad_example" {
-  egress {
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
- resource "aws_security_group_rule" "bad_example" {
-  type = "ingress"
-  cidr_blocks = ["0.0.0.0/0"]
-}
+_MULTI_SECRET_ONE_LINE_PATCH_OVERLAY = """@@ -0,0 +1 @@
++Facebook = 294790898041575 | ce3f9f0362bbe5ab01dfc8ee565e4372;
 
 """
 
-_IAC_NO_VULNERABILITIES = """
-resource "aws_network_acl_rule" "bad_example" {
-  egress         = false
-  protocol       = "tcp"
-  from_port      = 22
-  to_port        = 22
-  rule_action    = "allow"
-  cidr_block     = "12.13.14.15"
-}
-"""
-
-
-@pytest.fixture(scope="session", autouse=True)
-def isolated_git():
-    """
-    Don't use any of the existing Git config
-
-    NOTE: As the fixture is scoped to the session we don't have to restore the
-        original values.
-    """
-    os.environ["GIT_CONFIG_GLOBAL"] = ""
-    os.environ["GIT_CONFIG_SYSTEM"] = ""
-
-
-@pytest.fixture(autouse=True)
-def do_not_use_real_user_dirs(monkeypatch, tmp_path):
-    """
-    This fixture ensures we do not use real user directories.
-    Overridden directories are:
-    - the auth configuration directory, where `ggshield auth` stores credentials.
-    - the cache directory
-    - the home directory
-    """
-    monkeypatch.setenv("GG_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("GG_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("GG_USER_HOME_DIR", str(tmp_path / "home"))
-
-
-@pytest.fixture(autouse=True)
-def do_not_use_colors(monkeypatch):
-    """
-    This fixture ensures we do not print colors for easier testing.
-    """
-    monkeypatch.setenv("NO_COLOR", "1")
-
-
-PIPFILE_WITH_VULN = """
-[[source]]
-url = "https://pypi.org/simple"
-verify_ssl = true
-name = "pypi"
-
-[packages]
-sqlparse = "==0.4.3"
-
-[dev-packages]
-
-[requires]
-python_version = "3.10"
-"""
-
-PIPFILE_LOCK_WITH_VULN = """
-{
-    "_meta": {
-        "hash": {
-            "sha256": "2bf167f6a72aaa0f48f5876945f2a37874f3f114dad5e952cd7df9dfe8d9d281"
-        },
-        "pipfile-spec": 6,
-        "requires": {
-            "python_version": "3.10"
-        },
-        "sources": [
+_MULTI_SECRET_ONE_LINE_PATCH_OVERLAY_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policies": ["File extensions", "Filenames", "Secrets detection"],
+        "policy_breaks": [
             {
-                "name": "pypi",
-                "url": "https://pypi.org/simple",
-                "verify_ssl": true
+                "type": "Facebook Access Tokens",
+                "policy": "Secrets Detection",
+                "matches": [
+                    {
+                        "match": "294790898041575",
+                        "index_start": 26,
+                        "index_end": 41,
+                        "type": "client_id",
+                    },
+                    {
+                        "match": "ce3f9f0362bbe5ab01dfc8ee565e4372",
+                        "index_start": 44,
+                        "index_end": 76,
+                        "type": "client_secret",
+                    },
+                ],
             }
-        ]
-    },
-    "default": {
-        "sqlparse": {
-            "hashes": [
-                "sha256:0323c0ec29cd52bceabc1b4d9d579e311f3e4961b98d174201d5622a23b85e34",
-                "sha256:69ca804846bb114d2ec380e4360a8a340db83f0ccf3afceeb1404df028f57268"
-            ],
-            "index": "pypi",
-            "version": "==0.4.3"
-        }
-    },
-    "develop": {}
-}
+        ],
+        "policy_break_count": 1,
+    }
+)
+
+_MULTI_SECRET_TWO_LINES_PATCH = """@@ -0,0 +2 @@
++FacebookAppId = 294790898041575;
++FacebookAppSecret = ce3f9f0362bbe5ab01dfc8ee565e4372;
+
 """
 
-PIPFILE_NO_VULN = """
-[[source]]
-url = "https://pypi.org/simple"
-verify_ssl = true
-name = "pypi"
-
-[packages]
-sqlparse = "==0.4.4"
-
-[dev-packages]
-
-[requires]
-python_version = "3.10"
-"""
-
-PIPFILE_LOCK_NO_VULN = """
-{
-    "_meta": {
-        "hash": {
-            "sha256": "9e0257467cb126854e4a922f143941c3ffd38bca1c5805c778f96af3832f9fd3"
-        },
-        "pipfile-spec": 6,
-        "requires": {
-            "python_version": "3.10"
-        },
-        "sources": [
+_MULTI_SECRET_TWO_LINES_PATCH_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policies": ["File extensions", "Filenames", "Secrets detection"],
+        "policy_breaks": [
             {
-                "name": "pypi",
-                "url": "https://pypi.org/simple",
-                "verify_ssl": true
+                "type": "Facebook Access Tokens",
+                "policy": "Secrets Detection",
+                "matches": [
+                    {
+                        "match": "294790898041575",
+                        "index_start": 31,
+                        "index_end": 46,
+                        "type": "client_id",
+                    },
+                    {
+                        "match": "ce3f9f0362bbe5ab01dfc8ee565e4372",
+                        "index_start": 69,
+                        "index_end": 101,
+                        "type": "client_secret",
+                    },
+                ],
             }
-        ]
-    },
-    "default": {
-        "sqlparse": {
-            "hashes": [
-                "sha256:5430a4fe2ac7d0f93e66f1efc6e1338a41884b7ddf2a350cedd20ccc4d9d28f3",
-                "sha256:d446183e84b8349fa3061f0fe7f06ca94ba65b426946ffebe6e3e8295332420c"
-            ],
-            "index": "pypi",
-            "version": "==0.4.4"
-        }
-    },
-    "develop": {}
-}
+        ],
+        "policy_break_count": 1,
+    }
+)
+
+_MULTILINE_SECRET = """-----BEGIN RSA PRIVATE KEY-----
++MIIBOgIBAAJBAIIRkYjxjE3KIZiEc8k4sWWGNsPYRNE0u0bl5oFVApPLm+uXQ/4l
++bKO9LFtMiVPy700oMWLScwAN5OAiqVLMvHUCAwEAAQJANLr8nmEWuV6t2hAwhK5I
++NNmBkEo4M/xFxEtl9J7LKbE2gtNrlCQiJlPP1EMhwAjDOzQcJ3lgFB28dkqH5rMW
++TQIhANrCE7O+wlCKe0WJqQ3lYlHG91XWyGVgfExJwBDsAD9LAiEAmDY5OSsH0n2A
++22tthkAvcN1s66lG+0DztOVJ4QLI2z8CIBPeDGwGpx8pdIicN/5LFuLWbyAcoZaT
++bLaA/DCNPniBAiA0l//bzg+M3srIhm04xzLdR9Vb9IjPRlkvN074zdKDVwIhAKJb
++RF3C+CMFb0wXme/ovcDeM1+3W/UmSHYUW4b3WYq4
++-----END RSA PRIVATE KEY-----"""
+
+_SIMPLE_SECRET_MULTILINE_PATCH_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policies": ["File extensions", "Filenames", "Secrets detection"],
+        "policy_breaks": [
+            {
+                "type": "RSA Private Key",
+                "policy": "Secrets Detection",
+                "matches": [
+                    {
+                        "match": _MULTILINE_SECRET,  # noqa
+                        "index_start": 42,
+                        "index_end": 543,
+                        "type": "apikey",
+                    }
+                ],
+            }
+        ],
+        "policy_break_count": 1,
+    }
+)
+
+_SIMPLE_SECRET_MULTILINE_PATCH = (
+    """@@ -0,0 +1,29 @@
++PrivateKeyRsa:
++- text: """
+    + _MULTILINE_SECRET
+)
+
+
+_ONE_LINE_AND_MULTILINE_PATCH_SCAN_RESULT = ScanResult.SCHEMA.load(
+    {
+        "policy_breaks": [
+            {
+                "type": "Facebook Access Tokens",
+                "policy": "Secrets Detection",
+                "matches": [
+                    {
+                        "match": "294790898041573",
+                        "line_start": 2,
+                        "line_end": 2,
+                        "index_start": 34,
+                        "index_end": 49,
+                        "type": "client_id",
+                    },
+                    {
+                        "match": "ce3f9f0362bbe5ab01dfc8ee565e4371",
+                        "line_start": 2,
+                        "line_end": 2,
+                        "index_start": 52,
+                        "index_end": 84,
+                        "type": "client_secret",
+                    },
+                ],
+            },
+            {
+                "type": "RSA Private Key",
+                "policy": "Secrets detection",
+                "matches": [
+                    {
+                        "line_start": 2,
+                        "match": _MULTILINE_SECRET,
+                        "index_start": 86,
+                        "index_end": 585,
+                        "type": "apikey",
+                        "line_end": 10,
+                    }
+                ],
+            },
+            {
+                "type": "SendGrid Key",
+                "policy": "Secrets detection",
+                "matches": [
+                    {
+                        "line_start": 10,
+                        "match": "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",  # noqa
+                        "index_start": 594,
+                        "index_end": 662,
+                        "type": "apikey",
+                        "line_end": 10,
+                    }
+                ],
+            },
+        ],
+        "policies": ["Filenames", "File extensions", "Secrets detection"],
+        "policy_break_count": 2,
+    }
+)
+
+_ONE_LINE_AND_MULTILINE_PATCH_CONTENT = """@@ -0,0 +1,29 @@
++FacebookAppKeys: 294790898041573 / ce3f9f0362bbe5ab01dfc8ee565e4371 -----BEGIN RSA PRIVATE KEY-----
++MIIBOgIBAAJBAIIRkYjxjE3KIZiEc8k4sWWGNsPYRNE0u0bl5oFVApPLm+uXQ/4l
++bKO9LFtMiVPy700oMWLScwAN5OAiqVLMvHUCAwEAAQJANLr8nmEWuV6t2hAwhK5I
++NNmBkEo4M/xFxEtl9J7LKbE2gtNrlCQiJlPP1EMhwAjDOzQcJ3lgFB28dkqH5rMW
++TQIhANrCE7O+wlCKe0WJqQ3lYlHG91XWyGVgfExJwBDsAD9LAiEAmDY5OSsH0n2A
++22tthkAvcN1s66lG+0DztOVJ4QLI2z8CIBPeDGwGpx8pdIicN/5LFuLWbyAcoZaT
++bLaA/DCNPniBAiA0l//bzg+M3srIhm04xzLdR9Vb9IjPRlkvN074zdKDVwIhAKJb
++RF3C+CMFb0wXme/ovcDeM1+3W/UmSHYUW4b3WYq4
++-----END RSA PRIVATE KEY----- token: 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
+"""  # noqa
+
+_ONE_LINE_AND_MULTILINE_PATCH = (
+    """commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 A\0test\0\0diff --git a/test b/test
+new file mode 100644
+index 0000000..b80e3df
+--- /dev/null
++++ b/test
+"""
+    + _ONE_LINE_AND_MULTILINE_PATCH_CONTENT
+)
+
+_NO_SECRET_PATCH = """commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 A\0test\0\0diff --git a/test b/test
+new file mode 100644
+index 0000000..b80e3df
+--- /dev/null
++++ b/test
+@@ -0,0 +1 @@
++this is a patch without secret
 """
 
+_SECRET_RAW_FILE = '+sg_key = "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";\n'
 
-@pytest.fixture
-def pipfile_lock_with_vuln() -> str:
-    return PIPFILE_LOCK_WITH_VULN
+_SINGLE_ADD_PATCH = """commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 A\0test\0\0diff --git a/test b/test
+new file mode 100644
+index 0000000..3c9af3f
+--- /dev/null
++++ b/test
+@@ -0,0 +1 @@
++sg_key = "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";
+"""
+
+_SINGLE_MOVE_PATCH = """
+commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 M\0test\0\0diff --git a/test b/test
+index 3c9af3f..b0ce1c7 100644
+--- a/test
++++ b/test
+@@ -1 +1,2 @@
++something
+ sg_key = "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";
+"""
+
+_SINGLE_DELETE_PATCH = """commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 D\0test\0\0diff --git a/test b/test
+index b0ce1c7..deba01f 100644
+--- a/test
++++ b/test
+@@ -1,2 +1 @@
+ something
+-sg_key = "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";
+"""
+
+_PATCH_WITH_NONEWLINE_BEFORE_SECRET = """commit 9537b6343a81f88d471e93f20ffb2e2665bbab00
+Author: GitGuardian Owl <owl@example.com>
+Date:   Thu Aug 18 18:20:21 2022 +0200
+
+A message
+
+:000000 100644 0000000 e965047 M\0artifactory\0\0diff --git a/artifactory b/artifactory
+index 2ace9c7..4c7699d 100644
+--- a/artifactory
++++ b/artifactory
+@@ -1,3 +1,3 @@
+ some line
+ some other line
+-deleted line
+\\ No newline at end of file
++sg_key = "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"
+\\ No newline at end of file
+"""
+
+TWO_POLICY_BREAKS = ScanResult.SCHEMA.load(
+    {
+        "policy_breaks": [
+            {
+                "type": "RSA Private Key",
+                "policy": "Secrets detection",
+                "matches": [
+                    {
+                        "line_start": 2,
+                        "match": _MULTILINE_SECRET,
+                        "index_start": 86,
+                        "index_end": 585,
+                        "type": "apikey",
+                        "line_end": 10,
+                    }
+                ],
+            },
+            {
+                "type": "SendGrid Key",
+                "policy": "Secrets detection",
+                "matches": [
+                    {
+                        "line_start": 10,
+                        "match": "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",  # noqa
+                        "index_start": 594,
+                        "index_end": 662,
+                        "type": "apikey",
+                        "line_end": 10,
+                    }
+                ],
+            },
+        ],
+        "policies": ["Filenames", "File extensions", "Secrets detection"],
+        "policy_break_count": 2,
+    }
+)
+
+# Docker example constants
+DOCKER_EXAMPLE_PATH = DATA_PATH / "docker-example.tar.xz"
+DOCKER__INCOMPLETE_MANIFEST_EXAMPLE_PATH = (
+    DATA_PATH / "docker-incomplete-manifest-example.tar.xz"
+)
+
+# Format is { layer_id: { path: content }}
+DOCKER_EXAMPLE_LAYER_FILES = {
+    "sha256:4e850fb0fe03eae7a9a505d114b342ecdf7fd6e5a3ed2a1967e40083d63c7abe": {
+        "/app/file_one": "Hello, I am the first file!\n"
+    },
+    "sha256:f1c86b269b6a35c2158e8cd69b5e276d6c238272adcdd44efa21e5d79d099ddb": {
+        "/app/file_three.sh": "echo Life is beautiful.\n",
+        "/app/file_two.py": """print("Hi! I'm the second file but I'm happy.")\n""",
+    },
+}
 
 
-def clean_directory(path: Path):
-    for filepath in path.iterdir():
-        if filepath.is_file():
-            os.remove(filepath)
+my_vcr = vcr.VCR(
+    cassette_library_dir=join(dirname(realpath(__file__)), "cassettes"),
+    path_transformer=vcr.VCR.ensure_suffix(".yaml"),
+    decode_compressed_response=True,
+    ignore_localhost=True,
+    match_on=["method", "url"],
+    serializer="yaml",
+    record_mode="once",
+    filter_headers=["Authorization"],
+)
 
 
-def make_dummy_sca_repo():
-    """Function to create a dummy SCA repo as a tarfile. Files are added
-    to the tarfile root.
+@pytest.fixture(scope="session")
+def client() -> GGClient:
+    if "GITGUARDIAN_API_KEY" not in os.environ:
+        warnings.warn(
+            "GITGUARDIAN_API_KEY is not set, recording VCR cassettes won't work."
+        )
+        os.environ["GITGUARDIAN_API_KEY"] = "not-a-real-key"
+    api_key = os.environ["GITGUARDIAN_API_KEY"]
+    base_uri = os.getenv("GITGUARDIAN_API_URL", "https://api.gitguardian.com")
+    return GGClient(api_key, base_uri)
+
+
+@pytest.fixture(scope="session")
+def cache() -> Cache:
+    c = Cache()
+    c.purge()
+    return c
+
+
+@pytest.fixture()
+def cli_runner():
+    return CliRunner()
+
+
+@pytest.fixture(scope="function")
+def cli_fs_runner(cli_runner):
+    with cli_runner.isolated_filesystem():
+        yield cli_runner
+
+
+@pytest.fixture(scope="function")
+def isolated_fs(fs):
+    # isolate fs but include CA bundle for https validation
+    fs.add_real_directory(os.path.dirname(extract_zipped_paths(DEFAULT_CA_BUNDLE_PATH)))
+    # add cassettes dir
+    cassettes_dir = join(dirname(realpath(__file__)), "cassettes")
+    fs.add_real_directory(cassettes_dir)
+    # Add a fake OS-release file. It describes a linux OS
+    mock_contents = """ID="ubuntu"\nVERSION_ID="22.04"\n"""
+    f = fs.create_file("/etc/os-release")
+    f.set_contents(mock_contents)
+
+
+def write_text(filename: Union[str, Path], content: str):
+    """Create a text file named `filename` with content `content.
+    Create any missing dirs if necessary."""
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def write_yaml(filename: Union[str, Path], data: Any):
+    """Save data as a YAML file in `filename`, using `write_text()`"""
+    write_text(filename, yaml.dump(data))
+
+
+def assert_invoke_exited_with(result: Result, exit_code: int):
+    msg = f"""
+    Expected code {exit_code}, got {result.exit_code}.
+
+    stdout:
+    {result.stdout}
+
+    stderr:
+    {result.stderr if result.stderr_bytes is not None else ""}
     """
-    result_buffer = io.BytesIO()
-    with tempfile.TemporaryDirectory() as tmp_path_str:
-        tmp_path = Path(tmp_path_str)
-        repo = Repository.create(tmp_path)
-
-        repo.create_branch("branch_with_vuln", orphan=True)
-        clean_directory(tmp_path)
-        repo.create_commit("Empty commit to start with")
-        (tmp_path / "Pipfile").write_text(PIPFILE_WITH_VULN)
-        (tmp_path / "Pipfile.lock").write_text(PIPFILE_LOCK_WITH_VULN)
-        (tmp_path / "dummy_file.py").touch()
-        repo.add(".")
-        repo.create_commit("pipfile_with_vuln")
-
-        repo.create_branch("branch_without_vuln", orphan=True)
-        clean_directory(tmp_path)
-        (tmp_path / "Pipfile").write_text(PIPFILE_NO_VULN)
-        (tmp_path / "Pipfile.lock").write_text(PIPFILE_LOCK_NO_VULN)
-        (tmp_path / "dummy_file.py").touch()
-        repo.add(".")
-        repo.create_commit("pipfile_without_vuln")
-
-        repo.create_branch("branch_without_lock", orphan=True)
-        clean_directory(tmp_path)
-        (tmp_path / "Pipfile").write_text(PIPFILE_NO_VULN)
-        (tmp_path / "dummy_file.py").touch()
-        repo.add(".")
-        repo.create_commit("pipfile_without_lock")
-
-        repo.create_branch("branch_without_sca", orphan=True)
-        clean_directory(tmp_path)
-        (tmp_path / "dummy_file.py").touch()
-        repo.add(".")
-        repo.create_commit("dummy file")
-
-        result_tar = tarfile.TarFile(fileobj=result_buffer, mode="w")
-        result_tar.add(tmp_path_str, arcname="./")
-    result_buffer.seek(0)
-    return tarfile.TarFile(fileobj=result_buffer, mode="r")
+    assert result.exit_code == exit_code, msg
 
 
-DUMMY_SCA_REPO = make_dummy_sca_repo()
+def assert_invoke_ok(result: Result):
+    assert_invoke_exited_with(result, 0)
 
 
-@pytest.fixture
-def dummy_sca_repo(tmp_path):
-    """Return a fresh copy of a dummy sca repo"""
-    DUMMY_SCA_REPO.extractall(path=tmp_path)
-    return Repository(tmp_path)
+def make_fake_path_inaccessible(fs: FakeFilesystem, path: Union[str, Path]):
+    """
+    Make `path` inaccessible inside `fs`. This is useful to test IO permission errors.
+    """
+
+    # `force_unix_mode` is required for Windows.
+    # See <https://pytest-pyfakefs.readthedocs.io/en/latest/usage.html#set-file-as-inaccessible-under-windows>
+    fs.chmod(path, 0o0000, force_unix_mode=True)
